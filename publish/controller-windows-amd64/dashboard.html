@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>巡检主控面板</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f7f9fc; color: #1f2937; }
+    h1 { margin-bottom: 6px; }
+    h3 { margin: 0 0 8px 0; font-size: 14px; }
+    .hint { color: #4b5563; margin-bottom: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .title { font-size: 16px; font-weight: 700; margin-bottom: 8px; display: flex; justify-content: space-between; }
+    .ok { color: #059669; }
+    .bad { color: #dc2626; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .stats { margin: 8px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { border-radius: 20px; padding: 2px 8px; font-size: 12px; border: 1px solid #d1d5db; }
+    .kv { font-size: 13px; margin: 4px 0; color: #334155; }
+    .actions { margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+    button { border: 1px solid #0ea5e9; background: #0ea5e9; color: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .link-btn { border: 1px solid #cbd5e1; background: #fff; color: #0f172a; }
+    .drawer { position: fixed; top: 0; right: 0; width: 460px; height: 100%; background: #fff; border-left: 1px solid #e5e7eb; box-shadow: -2px 0 8px rgba(0,0,0,0.08); padding: 14px; overflow: auto; display: none; z-index: 99; }
+    .drawer.open { display: block; }
+    .mono { font-family: Menlo, Consolas, monospace; font-size: 12px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin: 4px 0; }
+
+    /* 进程配置面板样式 */
+    .config-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .config-panel h3 { margin-top: 0; }
+    .config-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .tag { display: inline-flex; align-items: center; border-radius: 6px; padding: 3px 8px; font-size: 13px; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; gap: 6px; }
+    .tag .remove { cursor: pointer; color: #ef4444; font-weight: bold; font-size: 16px; line-height: 1; }
+    .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    input[type="text"] { border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 8px; font-size: 13px; width: 140px; }
+    .save-btn { background: #059669; border-color: #059669; }
+    .proc-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
+    .proc-running { background: #059669; }
+    .proc-stopped { background: #f59e0b; }
+    .proc-unknown { background: #9ca3af; }
+    .proc-row { font-size: 12px; margin: 2px 0; padding-left: 12px; }
+  </style>
+</head>
+<body>
+  <h1>主控机巡检面板</h1>
+  <div class="hint">每 5 秒自动刷新，按机器 IP 展示可视化指标，支持手动下发"立即检测"命令</div>
+
+  <!-- 进程配置面板 -->
+  <div class="config-panel" id="configPanel">
+    <h3>进程监控配置（回车即可保存，下次巡检生效）</h3>
+    <div class="config-row">
+      <div class="tag-list" id="tagList"></div>
+      <input type="text" id="procInput" placeholder="输入进程名，回车保存" />
+      <span class="muted" id="cfgStatus"></span>
+    </div>
+  </div>
+
+  <div id="meta" class="hint"></div>
+  <div id="list" class="grid"></div>
+  <div id="drawer" class="drawer"></div>
+
+  <script>
+    const listEl = document.getElementById("list");
+    const metaEl = document.getElementById("meta");
+    const drawerEl = document.getElementById("drawer");
+    const tagListEl = document.getElementById("tagList");
+    const procInputEl = document.getElementById("procInput");
+    const cfgStatusEl = document.getElementById("cfgStatus");
+    let cacheData = null;
+    let frozen = false;
+    let currentTargets = []; // 当前进程列表（从 API 获取）
+
+    // ===== 进程配置面板逻辑 =====
+
+    function renderTags(targets) {
+      if (!Array.isArray(targets)) targets = [];
+      currentTargets = targets;
+      if (!tagListEl) return;
+      tagListEl.innerHTML = targets.map((t, i) =>
+        `<span class="tag">${t}<span class="remove" onclick="removeTag(${i})">&times;</span></span>`
+      ).join("") + (targets.length === 0 ? '<span class="muted">尚未配置</span>' : "");
+    }
+
+    function removeTag(idx) {
+      if (currentTargets.length <= 1) return; // 至少保留一个进程
+      currentTargets.splice(idx, 1);
+      const newTargets = currentTargets.join(","); // 快照，防止竞态
+      renderTags(currentTargets);
+      saveProcessConfig(newTargets);
+    }
+
+    if (procInputEl) {
+      procInputEl.addEventListener("keydown", function(e) {
+        if (e.key === "Enter") {
+          const val = procInputEl.value.trim();
+          if (val && !currentTargets.includes(val)) {
+            currentTargets.push(val);
+            const newTargets = currentTargets.join(","); // 快照
+            renderTags(currentTargets);
+            procInputEl.value = "";
+            saveProcessConfig(newTargets);
+          }
+        }
+      });
+    }
+
+    async function saveProcessConfig(targetsStr) {
+      const targets = targetsStr || currentTargets.join(",");
+      if (cfgStatusEl) cfgStatusEl.textContent = "保存中...";
+      try {
+        const res = await fetch("/api/process-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ process_targets: targets })
+        });
+        if (!res.ok) throw new Error("保存失败");
+        if (cfgStatusEl) {
+          cfgStatusEl.textContent = "已保存，下次心跳下发";
+          setTimeout(() => { if (cfgStatusEl) cfgStatusEl.textContent = ""; }, 3000);
+        }
+      } catch (e) {
+        if (cfgStatusEl) cfgStatusEl.textContent = "失败: " + e.message;
+      }
+    }
+
+    // ===== 进程状态解析 =====
+    // 从 process 的 detail 数据中解析每个进程的运行状态
+    // 策略：PID 信号优先级最高（检查进程: name, PID: xxx）；
+    //       其次看 "进程未运行" warning；
+    //       两者都没有 = 未知（尚未巡检到该进程）
+    function parseProcessStatus(agent) {
+      const detail = (agent.last_details || {}).process || {};
+      const resultLines = detail.result_lines || [];
+      const warningLines = detail.warning_lines || [];
+      const checked = (agent.last_structured || {}).process || {};
+      const processNames = checked.checked_processes || [];
+      const statusMap = {};
+      for (const name of processNames) {
+        // 1. 判跑：PID 信号最强，由于日志用了全称，用宽松匹配（行包含进程短名 + ", PID:"）
+        let running = false;
+        for (const line of resultLines) {
+          if (line.indexOf(name) !== -1 && line.indexOf(", PID:") !== -1) {
+            running = true;
+            break;
+          }
+        }
+        // 2. 判停：仅在未找到 PID 时检查 "进程未运行" warning
+        let stopped = false;
+        if (!running) {
+          for (const line of warningLines) {
+            if (line.indexOf("进程未运行: " + name) !== -1) {
+              stopped = true;
+              break;
+            }
+          }
+        }
+        // 3. 结论
+        if (running) {
+          statusMap[name] = true;    // 运行中（PID 信号权威）
+        } else if (stopped) {
+          statusMap[name] = false;   // 已确认停止
+        } else {
+          statusMap[name] = null;    // 未知（尚未有巡检数据）
+        }
+      }
+      return statusMap;
+    }
+
+    // ===== 通用函数 =====
+
+    function fmtTime(ts) {
+      if (!ts) return "-";
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    async function triggerCheck(agentId, btn) {
+      btn.disabled = true;
+      try {
+        const res = await fetch("/trigger-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_id: agentId })
+        });
+        if (!res.ok) throw new Error("下发失败");
+        await reload();
+      } catch (e) {
+        alert("下发失败: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function detailLines(lines) {
+      if (!lines || !lines.length) return "<div class='muted'>无</div>";
+      return lines.map(x => `<div class="mono">${String(x).replace(/</g, "&lt;")}</div>`).join("");
+    }
+
+    function closeDrawer() {
+      drawerEl.classList.remove("open");
+      drawerEl.innerHTML = "";
+      frozen = false;
+    }
+
+    function openMetricDetail(agentId, metricType) {
+      if (!cacheData) return;
+      const agent = (cacheData.agents || []).find(x => x.agent_id === agentId);
+      if (!agent) return;
+      const detail = (agent.last_details || {})[metricType] || {};
+      const structured = (agent.last_structured || {})[metricType] || {};
+      const titleMap = { system: "系统指标详情", security: "安全指标详情", process: "进程指标详情" };
+
+      let extra = "";
+      if (metricType === "security") {
+        extra = `<div class="kv"><b>账户风险</b> root远程登录: ${(structured.root_login_risk ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | 密码登录: ${(structured.password_login_risk ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | 多UID0: ${(structured.has_multi_uid0 ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | 空密码: ${(structured.has_empty_password_user ? '<span class="bad">是</span>' : '<span class="ok">否</span>')}</div>
+           <div class="kv"><b>账户深度</b> 系统账户可登录: ${(structured.has_sys_login_users ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | root已锁定: ${(structured.root_locked ? '<span class="ok">是</span>' : '<span class="bad">否</span>')} | 重复UID: ${(structured.has_dup_uid ? '<span class="bad">是</span>' : '<span class="ok">否</span>')}</div>
+           <div class="kv"><b>SSH加固</b> 空密码: ${(structured.ssh_empty_password ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | X11转发: ${(structured.ssh_x11_forward ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | TCP转发: ${(structured.ssh_tcp_forward ? '<span class="bad">是</span>' : '<span class="ok">否</span>')}</div>
+           <div class="kv"><b>SSH续</b> 用户环境变量: ${(structured.ssh_user_env_risk ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | PAM关闭: ${(structured.ssh_pam_off ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | MaxAuthTries过高: ${(structured.ssh_max_auth_high ? '<span class="bad">是</span>' : '<span class="ok">否</span>')}</div>
+           <div class="kv"><b>权限异常文件</b> ${((structured.permission_issues || []).join(" ; ")) || "无"}</div>
+           <div class="kv"><b>系统加固</b> ASLR: ${(structured.aslr_enabled ? '<span class="ok">开启</span>' : '<span class="bad">未完全开启</span>')} | CoreDump: ${(structured.core_dump_disabled ? '<span class="ok">已禁用</span>' : '<span class="bad">未禁用</span>')} | 高危SUID: ${(structured.has_suid_risk ? '<span class="bad">是</span>' : '<span class="ok">否</span>')}</div>
+           <div class="kv"><b>网络加固</b> IP转发: ${(structured.ip_forward_enabled ? '<span class="bad">开启</span>' : '<span class="ok">关闭</span>')} | SYN Cookie: ${(structured.syn_cookie_on ? '<span class="ok">开启</span>' : '<span class="bad">关闭</span>')} | ICMP重定向: ${(structured.icmp_redirect_risk ? '<span class="bad">有风险</span>' : '<span class="ok">正常</span>')} | 源路由: ${(structured.source_route_enabled ? '<span class="bad">开启</span>' : '<span class="ok">关闭</span>')}</div>
+           <div class="kv"><b>审计日志</b> 日志服务: ${(structured.log_service_running ? '<span class="ok">运行中</span>' : '<span class="bad">未运行</span>')} | auditd: ${(structured.auditd_running ? '<span class="ok">运行中</span>' : '<span class="bad">未运行</span>')} | 安全日志: ${(structured.secure_log_exists ? '<span class="ok">存在</span>' : '<span class="bad">不存在</span>')}</div>`;
+      } else if (metricType === "process") {
+        // 按进程展示运行状态
+        const statusMap = parseProcessStatus(agent);
+        const processRows = Object.keys(statusMap).map(name =>
+          `<div class="proc-row"><span class="proc-status ${statusMap[name] === true ? 'proc-running' : statusMap[name] === false ? 'proc-stopped' : 'proc-unknown'}"></span> ${name} ${statusMap[name] === true ? '(运行中)' : statusMap[name] === false ? '(未运行)' : '(未检查)'}</div>`
+        ).join("");
+        extra = `<div class="kv"><b>各进程状态</b></div>${processRows || '<div class="muted">无</div>'}
+           <div class="kv"><b>检查到的PID数量</b> ${structured.checked_pid_count ?? 0}</div>`;
+      } else {
+        extra = `<div class="kv"><b>系统数值</b> CPU: ${structured.cpu_usage_percent ?? "-"}% | 内存: ${structured.mem_usage_percent ?? "-"}% | 负载(1/5/15m): ${structured.load_1 ?? "-"}/${structured.load_5 ?? "-"}/${structured.load_15 ?? "-"} | 磁盘告警: ${structured.disk_warning_count ?? 0}</div>`;
+      }
+
+      frozen = true;
+      drawerEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;">${titleMap[metricType] || metricType}</h3>
+          <button class="link-btn" onclick="closeDrawer()">关闭</button>
+        </div>
+        <div class="muted" style="margin-top:4px;">机器: ${agent.ip || agent.agent_id} (${agent.hostname || "unknown"})</div>
+        <div class="muted">脚本: ${detail.script || "-"} | 状态: ${detail.status || "-"} | 耗时: ${detail.duration_sec ?? "-" }s</div>
+        ${extra}
+        <div class="kv" style="margin-top:8px;"><b>ERROR 列表</b></div>
+        ${detailLines(detail.error_lines)}
+        <div class="kv" style="margin-top:8px;"><b>WARNING 列表</b></div>
+        ${detailLines(detail.warning_lines)}
+        <div class="kv" style="margin-top:8px;"><b>执行结果（过滤运行过程日志后）</b></div>
+        ${detailLines(detail.result_lines)}
+        <div class="kv" style="margin-top:8px;"><b>原始归档文件</b></div>
+        ${(agent.last_archive_files || []).map(x => `<div class='mono'>${String(x).replace(/</g, "&lt;")}</div>`).join("") || "<div class='muted'>无</div>"}
+      `;
+      drawerEl.classList.add("open");
+    }
+
+    function agentConfigBlock(agent) {
+      const extraTargets = agent.extra_process_targets || "";
+      const extraList = extraTargets ? extraTargets.split(",").map(s => s.trim()).filter(s => s) : [];
+      const globalList = cacheData && cacheData.process_targets ? cacheData.process_targets.split(",").map(s => s.trim()).filter(s => s) : [];
+      // 过滤掉已在全局列表中的重复项
+      const globalSet = new Set(globalList);
+      const filteredExtra = extraList.filter(p => !globalSet.has(p));
+      return `
+        <div class="kv" style="margin-top:8px;border-top:1px dashed #e5e7eb;padding-top:6px;">
+          <b>单机独有进程配置</b> <span class="muted">（此机器额外监控的进程，不影响全局）</span>
+          <div style="margin-top:4px;">
+            <span class="muted">全局: </span>${globalList.map(p => `<span style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;padding:1px 6px;margin:2px;font-size:12px;display:inline-block;">${p}</span>`).join("") || '<span class="muted">无</span>'}
+          </div>
+          <div style="margin-top:4px;">
+            <span class="muted">独有: </span>
+            <span id="agent-extra-tags-${agent.agent_id.replace(/[^a-zA-Z0-9_-]/g,'_')}">
+              ${filteredExtra.map(p => `<span class="tag">${p} <span class="remove" onclick="removeAgentTag('${agent.agent_id}','${p}',event)">&times;</span></span>`).join("") || '<span class="muted">无</span>'}
+            </span>
+            <input type="text" style="width:100px;font-size:12px;padding:2px 4px;margin-left:4px;"
+              placeholder="添加进程"
+              onkeydown="if(event.key==='Enter'){addAgentTag('${agent.agent_id}',this.value,this);this.value='';}" />
+          </div>
+        </div>`;
+    }
+
+    async function saveAgentExtra(agentId) {
+      const elId = "agent-extra-tags-" + agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const tags = el.querySelectorAll(".tag");
+      const seen = new Set();
+      const names = [];
+      tags.forEach(t => {
+        const text = t.childNodes[0].textContent.trim();
+        if (text && !seen.has(text)) {
+          seen.add(text);
+          names.push(text);
+        }
+      });
+      const extraStr = names.join(",");
+      try {
+        await fetch("/api/agent-process-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_id: agentId, extra_targets: extraStr })
+        });
+      } catch (e) {}
+    }
+
+    function addAgentTag(agentId, name, inputEl) {
+      name = (name || "").trim();
+      if (!name) return;
+      const elId = "agent-extra-tags-" + agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const el = document.getElementById(elId);
+      if (!el) return;
+      // 检查是否与全局重复
+      const globalList = cacheData && cacheData.process_targets ? cacheData.process_targets.split(",").map(s => s.trim()).filter(s => s) : [];
+      if (globalList.includes(name)) return;
+      // 去重检查
+      const existing = el.querySelectorAll(".tag");
+      for (const t of existing) {
+        if (t.childNodes[0].textContent.trim() === name) return;
+      }
+      const span = document.createElement("span");
+      span.className = "tag";
+      span.innerHTML = name + ' <span class="remove" onclick="removeAgentTag(\'' + agentId + '\',\'' + name + '\',event)">&times;</span>';
+      el.appendChild(span);
+      inputEl.value = "";
+      saveAgentExtra(agentId);
+    }
+
+    function removeAgentTag(agentId, name, event) {
+      if (event) event.stopPropagation();
+      const elId = "agent-extra-tags-" + agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const tags = el.querySelectorAll(".tag");
+      for (const t of tags) {
+        if (t.childNodes[0].textContent.trim() === name) {
+          t.remove();
+          break;
+        }
+      }
+      saveAgentExtra(agentId);
+    }
+
+    function metricsBlock(agent) {
+      const s = agent.last_structured || {};
+      const system = s.system || {};
+      const security = s.security || {};
+      const process = s.process || {};
+      const checkedProcesses = (process.checked_processes || []).join(", ") || "-";
+      const securityPerm = security.permission_issue_count ?? 0;
+
+      // 逐个进程展示运行状态
+      const statusMap = parseProcessStatus(agent);
+      const procStatusLines = Object.keys(statusMap).map(name =>
+        `<span style="margin-right:8px;"><span class="proc-status ${statusMap[name] === true ? 'proc-running' : statusMap[name] === false ? 'proc-stopped' : 'proc-unknown'}"></span>${name}${statusMap[name] === true ? '' : statusMap[name] === false ? ' (未运行)' : ' (未检查)'}</span>`
+      ).join("") || "-";
+
+      return `
+        <div class="kv"><b>系统指标</b> CPU: ${system.cpu_usage_percent ?? "-"}% | 内存: ${system.mem_usage_percent ?? "-"}% | 负载1m: ${system.load_1 ?? "-"} | 磁盘告警: ${system.disk_warning_count ?? 0}
+        <button class="link-btn" onclick="openMetricDetail('${agent.agent_id}','system')">查看详情</button></div>
+        <div class="kv"><b>安全基线指标</b> WARN: ${security.warning_count ?? 0} | ERR: ${security.error_count ?? 0} | ROOT登录: ${(security.root_login_risk ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | 多UID0: ${(security.has_multi_uid0 ? '<span class="bad">是</span>' : '<span class="ok">否</span>')} | IP转发: ${(security.ip_forward_enabled ? '<span class="bad">开</span>' : '<span class="ok">关</span>')}
+        <button class="link-btn" onclick="openMetricDetail('${agent.agent_id}','security')">查看详情</button></div>
+        <div class="kv"><b>进程指标</b> 告警: ${process.warning_count ?? 0} | 错误: ${process.error_count ?? 0} | 假死/死锁风险: ${(process.hang_risk ? "是" : "否")}
+        <button class="link-btn" onclick="openMetricDetail('${agent.agent_id}','process')">查看详情</button></div>
+        <div class="kv"><b>进程状态一览</b> ${procStatusLines}</div>
+      `;
+    }
+
+    function render(data) {
+      cacheData = data;
+      // 更新进程配置面板
+      if (data.process_targets) {
+        renderTags(data.process_targets.split(",").map(s => s.trim()).filter(s => s));
+      } else {
+        renderTags([]);
+      }
+      metaEl.textContent = `服务时间: ${new Date(data.server_time * 1000).toLocaleString()} | 存活阈值: ${data.alive_timeout_seconds}s | 机器数: ${data.agents.length}`;
+      if (!data.agents.length) {
+        listEl.innerHTML = "<div class='card'>暂无待检机器上报数据</div>";
+        return;
+      }
+      const sorted = [...data.agents].sort((a, b) => (a.ip || "").localeCompare(b.ip || ""));
+      listEl.innerHTML = sorted.map(agent => `
+        <div class="card">
+          <div class="title">
+            <span>${agent.ip || agent.agent_id} (${agent.hostname || "unknown"})</span>
+            <span>${agent.check_overdue ? '<span style="color:#dc2626;font-weight:bold;">巡检逾期</span> ' : ''}<span class="${agent.alive ? "ok" : "bad"}">${agent.alive ? "在线" : "离线"}</span></span>
+          </div>
+          <div class="muted">agent_id: ${agent.agent_id}</div>
+          <div class="muted">最近心跳: ${fmtTime(agent.last_heartbeat_ts)} | 心跳计数: ${agent.heartbeat_count}</div>
+          <div class="muted">最近巡检: ${fmtTime(agent.last_report_ts)} ${agent.check_overdue ? '<span style="color:#dc2626;">【逾期】未在预期序号收到巡检报告</span>' : ''}</div>
+          <div class="muted">待下发命令: ${agent.pending_command ? agent.pending_command.type : "无"}</div>
+          <div class="stats">
+            <span class="pill">INFO: ${agent.last_report_summary?.info || 0}</span>
+            <span class="pill">WARNING: ${agent.last_report_summary?.warning || 0}</span>
+            <span class="pill">ERROR: ${agent.last_report_summary?.error || 0}</span>
+          </div>
+          ${metricsBlock(agent)}
+          ${agentConfigBlock(agent)}
+          <div class="actions">
+            <button onclick="triggerCheck('${agent.agent_id}', this)">立即检测</button>
+            <span class="muted">命令会在该机器下一次心跳时下发</span>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    async function reload() {
+      if (frozen) return;
+      try {
+        const res = await fetch("/api/status");
+        if (!res.ok) throw new Error("request failed");
+        const data = await res.json();
+        render(data);
+      } catch (e) {
+        metaEl.textContent = "加载失败: " + e.message;
+      }
+    }
+
+    reload();
+    setInterval(reload, 5000);
+    window.openMetricDetail = openMetricDetail;
+    window.closeDrawer = closeDrawer;
+  </script>
+</body>
+</html>

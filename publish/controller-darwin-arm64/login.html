@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>巡检系统登录</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; background: #f1f5f9; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+    .login-box { background: #fff; border-radius: 12px; padding: 32px; width: 360px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    h2 { text-align: center; margin-bottom: 20px; color: #1f2937; }
+    label { display: block; font-size: 13px; color: #4b5563; margin-bottom: 4px; }
+    input { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; margin-bottom: 14px; }
+    input:focus { outline: none; border-color: #0ea5e9; }
+    button { width: 100%; padding: 10px; background: #0ea5e9; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+    button:hover { background: #0284c7; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .error { color: #dc2626; font-size: 13px; text-align: center; margin-bottom: 10px; display: none; }
+    .change-row { margin-top: 16px; border-top: 1px solid #e5e7eb; padding-top: 12px; display: none; }
+    .change-row h4 { font-size: 13px; color: #4b5563; margin-bottom: 8px; }
+    .ok { color: #059669; font-size: 13px; text-align: center; margin-bottom: 10px; display: none; }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h2>巡检主控系统</h2>
+
+    <!-- 登录表单 -->
+    <div id="loginForm">
+      <label>账户</label>
+      <input type="text" id="username" value="admin" />
+      <label>密码</label>
+      <input type="password" id="password" />
+      <div class="error" id="loginError">账户或密码错误</div>
+      <button onclick="doLogin()">登 录</button>
+      <button style="margin-top:8px;background:#fff;color:#0ea5e9;border:1px solid #0ea5e9;"
+        onclick="toggleChangePwd()">修改密码</button>
+    </div>
+
+    <!-- 修改密码表单 -->
+    <div class="change-row" id="changeForm">
+      <h4>修改密码</h4>
+      <label>当前密码</label>
+      <input type="password" id="oldPwd" />
+      <label>新密码</label>
+      <input type="password" id="newPwd" />
+      <label>确认新密码</label>
+      <input type="password" id="confirmPwd" />
+      <div class="error" id="changeError"></div>
+      <div class="ok" id="changeOk"></div>
+      <button onclick="doChangePwd()">确认修改</button>
+      <button style="margin-top:8px;background:#fff;color:#4b5563;border:1px solid #d1d5db;"
+        onclick="toggleChangePwd()">返回登录</button>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById("password").addEventListener("keydown", function(e) {
+      if (e.key === "Enter") doLogin();
+    });
+
+    function toggleChangePwd() {
+      var cf = document.getElementById("changeForm");
+      var lf = document.getElementById("loginForm");
+      cf.style.display = cf.style.display === "none" || !cf.style.display ? "block" : "none";
+      lf.style.display = cf.style.display === "block" ? "none" : "block";
+    }
+
+    async function doLogin() {
+      var btn = document.querySelector("#loginForm button");
+      var err = document.getElementById("loginError");
+      btn.disabled = true;
+      err.style.display = "none";
+      try {
+        var res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: document.getElementById("username").value, password: document.getElementById("password").value })
+        });
+        if (!res.ok) { err.style.display = "block"; btn.disabled = false; return; }
+        window.location.href = "/";
+      } catch (e) {
+        err.textContent = "网络错误: " + e.message;
+        err.style.display = "block";
+        btn.disabled = false;
+      }
+    }
+
+    async function doChangePwd() {
+      var err = document.getElementById("changeError");
+      var ok = document.getElementById("changeOk");
+      err.style.display = "none";
+      ok.style.display = "none";
+      var old = document.getElementById("oldPwd").value;
+      var n = document.getElementById("newPwd").value;
+      var c = document.getElementById("confirmPwd").value;
+      if (!old || !n) { err.textContent = "请填写所有字段"; err.style.display = "block"; return; }
+      if (n !== c) { err.textContent = "两次输入的新密码不一致"; err.style.display = "block"; return; }
+      try {
+        var res = await fetch("/api/change-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ old_password: old, new_password: n })
+        });
+        if (!res.ok) { var d = await res.json().catch(()=>({error:"未知错误"})); err.textContent = d.error || "修改失败"; err.style.display = "block"; return; }
+        ok.textContent = "密码修改成功，请重新登录";
+        ok.style.display = "block";
+        setTimeout(() => { toggleChangePwd(); window.location.reload(); }, 1500);
+      } catch (e) {
+        err.textContent = "网络错误: " + e.message;
+        err.style.display = "block";
+      }
+    }
+  </script>
+</body>
+</html>

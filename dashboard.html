@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>巡检主控面板</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f7f9fc; color: #1f2937; }
+    h1 { margin-bottom: 6px; }
+    h3 { margin: 0 0 8px 0; font-size: 14px; }
+    .hint { color: #4b5563; margin-bottom: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .title { font-size: 16px; font-weight: 700; margin-bottom: 8px; display: flex; justify-content: space-between; }
+    .ok { color: #059669; }
+    .bad { color: #dc2626; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .stats { margin: 8px 0; display: flex; gap: 8px; flex-wrap: wrap; }
+    .pill { border-radius: 20px; padding: 2px 8px; font-size: 12px; border: 1px solid #d1d5db; }
+    .kv { font-size: 13px; margin: 4px 0; color: #334155; overflow-wrap: anywhere; }
+    .actions { margin-top: 10px; display: flex; gap: 8px; align-items: center; }
+    button { border: 1px solid #0ea5e9; background: #0ea5e9; color: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .link-btn { border: 1px solid #cbd5e1; background: #fff; color: #0f172a; }
+    .drawer { position: fixed; top: 0; right: 0; width: min(760px, calc(100vw - 24px)); max-width: calc(100vw - 24px); height: 100%; box-sizing: border-box; background: #fff; border-left: 1px solid #e5e7eb; box-shadow: -2px 0 8px rgba(0,0,0,0.08); padding: 14px; overflow-y: auto; overflow-x: hidden; display: none; z-index: 99; }
+    .drawer.open { display: block; }
+    .mono { font-family: Menlo, Consolas, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; max-width: 100%; box-sizing: border-box; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin: 4px 0; }
+    .metric-group { margin-top: 10px; padding-top: 8px; border-top: 1px solid #e5e7eb; }
+    .metric-group-title { font-size: 13px; font-weight: 700; color: #0f172a; margin-bottom: 6px; }
+    .metric-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .mini-badge { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #e5e7eb; border-radius: 6px; padding: 2px 6px; font-size: 12px; background: #fff; color: #334155; }
+    .mini-badge b { color: #475569; font-weight: 600; }
+    .mini-badge.ok-badge { border-color: #bbf7d0; background: #f0fdf4; color: #047857; }
+    .mini-badge.bad-badge { border-color: #fecaca; background: #fef2f2; color: #b91c1c; }
+    .mini-badge.unknown-badge { border-color: #e5e7eb; background: #f8fafc; color: #64748b; }
+    .risk-line { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+
+    /* 进程配置面板样式 */
+    .config-panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; margin-bottom: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+    .config-panel h3 { margin-top: 0; }
+    .config-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .tag { display: inline-flex; align-items: center; border-radius: 6px; padding: 3px 8px; font-size: 13px; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; gap: 6px; }
+    .tag .remove { cursor: pointer; color: #ef4444; font-weight: bold; font-size: 16px; line-height: 1; }
+    .tag-list { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    input[type="text"] { border: 1px solid #d1d5db; border-radius: 6px; padding: 4px 8px; font-size: 13px; width: 140px; }
+    .save-btn { background: #059669; border-color: #059669; }
+    .proc-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 2px; }
+    .proc-running { background: #059669; }
+    .proc-stopped { background: #f59e0b; }
+    .proc-unknown { background: #9ca3af; }
+    .proc-row { font-size: 12px; margin: 2px 0; padding-left: 12px; }
+  </style>
+</head>
+<body>
+  <h1>主控机巡检面板</h1>
+  <div class="hint">每 5 秒自动刷新，按机器 IP 展示可视化指标，支持手动下发"立即检测"命令</div>
+
+  <!-- 进程配置面板 -->
+  <div class="config-panel" id="configPanel">
+    <h3>进程监控配置（回车即可保存，下次巡检生效）</h3>
+    <div class="config-row">
+      <div class="tag-list" id="tagList"></div>
+      <input type="text" id="procInput" placeholder="输入进程名，回车保存" />
+      <span class="muted" id="cfgStatus"></span>
+    </div>
+  </div>
+
+  <div id="meta" class="hint"></div>
+  <div id="list" class="grid"></div>
+  <div id="drawer" class="drawer"></div>
+
+  <script>
+    const listEl = document.getElementById("list");
+    const metaEl = document.getElementById("meta");
+    const drawerEl = document.getElementById("drawer");
+    const tagListEl = document.getElementById("tagList");
+    const procInputEl = document.getElementById("procInput");
+    const cfgStatusEl = document.getElementById("cfgStatus");
+    let cacheData = null;
+    let frozen = false;
+    let currentTargets = []; // 当前进程列表（从 API 获取）
+
+    // ===== 进程配置面板逻辑 =====
+
+    function renderTags(targets) {
+      if (!Array.isArray(targets)) targets = [];
+      currentTargets = targets;
+      if (!tagListEl) return;
+      tagListEl.innerHTML = targets.map((t, i) =>
+        `<span class="tag">${t}<span class="remove" onclick="removeTag(${i})">&times;</span></span>`
+      ).join("") + (targets.length === 0 ? '<span class="muted">尚未配置</span>' : "");
+    }
+
+    function removeTag(idx) {
+      if (currentTargets.length <= 1) return; // 至少保留一个进程
+      currentTargets.splice(idx, 1);
+      const newTargets = currentTargets.join(","); // 快照，防止竞态
+      renderTags(currentTargets);
+      saveProcessConfig(newTargets);
+    }
+
+    if (procInputEl) {
+      procInputEl.addEventListener("keydown", function(e) {
+        if (e.key === "Enter") {
+          const val = procInputEl.value.trim();
+          if (val && !currentTargets.includes(val)) {
+            currentTargets.push(val);
+            const newTargets = currentTargets.join(","); // 快照
+            renderTags(currentTargets);
+            procInputEl.value = "";
+            saveProcessConfig(newTargets);
+          }
+        }
+      });
+    }
+
+    async function saveProcessConfig(targetsStr) {
+      const targets = targetsStr || currentTargets.join(",");
+      if (cfgStatusEl) cfgStatusEl.textContent = "保存中...";
+      try {
+        const res = await fetch("/api/process-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ process_targets: targets })
+        });
+        if (!res.ok) throw new Error("保存失败");
+        if (cfgStatusEl) {
+          cfgStatusEl.textContent = "已保存，下次心跳下发";
+          setTimeout(() => { if (cfgStatusEl) cfgStatusEl.textContent = ""; }, 3000);
+        }
+      } catch (e) {
+        if (cfgStatusEl) cfgStatusEl.textContent = "失败: " + e.message;
+      }
+    }
+
+    // ===== 进程状态解析 =====
+    // 从 process 的 detail 数据中解析每个进程的运行状态
+    // 策略：PID 信号优先级最高（检查进程: name, PID: xxx）；
+    //       其次看 "进程未运行" warning；
+    //       两者都没有 = 未知（尚未巡检到该进程）
+    function parseProcessStatus(agent) {
+      const detail = (agent.last_details || {}).process || {};
+      const resultLines = detail.result_lines || [];
+      const warningLines = detail.warning_lines || [];
+      const checked = (agent.last_structured || {}).process || {};
+      const processNames = checked.checked_processes || [];
+      const statusMap = {};
+      for (const name of processNames) {
+        // 1. 判跑：PID 信号最强，由于日志用了全称，用宽松匹配（行包含进程短名 + ", PID:"）
+        let running = false;
+        for (const line of resultLines) {
+          if (line.indexOf(name) !== -1 && line.indexOf(", PID:") !== -1) {
+            running = true;
+            break;
+          }
+        }
+        // 2. 判停：仅在未找到 PID 时检查 "进程未运行" warning
+        let stopped = false;
+        if (!running) {
+          for (const line of warningLines) {
+            if (line.indexOf("进程未运行: " + name) !== -1) {
+              stopped = true;
+              break;
+            }
+          }
+        }
+        // 3. 结论
+        if (running) {
+          statusMap[name] = true;    // 运行中（PID 信号权威）
+        } else if (stopped) {
+          statusMap[name] = false;   // 已确认停止
+        } else {
+          statusMap[name] = null;    // 未知（尚未有巡检数据）
+        }
+      }
+      return statusMap;
+    }
+
+    // ===== 通用函数 =====
+
+    function fmtTime(ts) {
+      if (!ts) return "-";
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    async function triggerCheck(agentId, btn) {
+      btn.disabled = true;
+      try {
+        const res = await fetch("/trigger-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_id: agentId })
+        });
+        if (!res.ok) throw new Error("下发失败");
+        await reload();
+      } catch (e) {
+        alert("下发失败: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function detailLines(lines) {
+      if (!lines || !lines.length) return "<div class='muted'>无</div>";
+      return lines.map(x => `<div class="mono">${escapeHtml(x)}</div>`).join("");
+    }
+
+    function stateBadge(label, value, options = {}) {
+      const trueText = options.trueText || "是";
+      const falseText = options.falseText || "否";
+      const badWhenTrue = options.badWhenTrue !== false;
+      if (value === undefined || value === null) {
+        return `<span class="mini-badge unknown-badge"><b>${escapeHtml(label)}</b>未知</span>`;
+      }
+      const yes = !!value;
+      const isBad = badWhenTrue ? yes : !yes;
+      return `<span class="mini-badge ${isBad ? "bad-badge" : "ok-badge"}"><b>${escapeHtml(label)}</b>${yes ? trueText : falseText}</span>`;
+    }
+
+    function valueBadge(label, value, cls = "") {
+      return `<span class="mini-badge ${cls}"><b>${escapeHtml(label)}</b>${escapeHtml(value ?? "-")}</span>`;
+    }
+
+    function metricGroup(title, badges) {
+      return `<div class="metric-group"><div class="metric-group-title">${escapeHtml(title)}</div><div class="metric-row">${badges.join("")}</div></div>`;
+    }
+
+    function calcSecurityRiskCount(security) {
+      const badWhenTrue = [
+        "has_empty_password_user", "has_passwd_empty_field", "has_multi_uid0", "has_sys_login_users",
+        "has_dup_uid", "has_dup_gid", "has_dup_user", "has_dup_group", "password_aging_risk",
+        "password_warn_age_risk", "home_dir_issue", "root_login_risk", "password_login_risk",
+        "ssh_empty_password", "ssh_pubkey_disabled", "ssh_hostbased_risk", "ssh_ignore_rhosts_off",
+        "ssh_x11_forward", "ssh_tcp_forward", "ssh_agent_forward", "ssh_gateway_ports", "ssh_tunnel",
+        "ssh_user_env_risk", "ssh_pam_off", "ssh_max_auth_high", "ssh_login_grace_high",
+        "ssh_client_alive_unsafe", "ssh_max_sessions_high", "ssh_keyboard_interactive_risk",
+        "ssh_access_control_missing", "ssh_weak_algorithms", "pass_max_days_risk", "pass_min_days_risk",
+        "pass_warn_age_risk", "pass_min_len_risk", "weak_encrypt_method", "weak_umask",
+        "pam_complexity_missing", "pam_lockout_missing", "pam_history_missing", "pwquality_weak",
+        "faillock_weak", "sudo_nopasswd", "sudo_use_pty_missing", "world_writable_no_sticky",
+        "unowned_files", "cron_writable", "authorized_keys_perm_weak", "ld_preload_risk",
+        "path_hijack_risk", "has_suid_risk", "fs_suid_dumpable_risk", "dmesg_restrict_weak",
+        "kptr_restrict_weak", "ptrace_scope_weak", "mac_missing_or_weak", "high_risk_module_loaded",
+        "fim_missing", "ip_forward_enabled", "ipv6_forward_enabled", "icmp_redirect_risk",
+        "source_route_enabled", "ipv6_redirect_risk", "rp_filter_weak", "log_martians_off",
+        "firewall_missing", "iptables_input_open", "insecure_ports_listening", "audit_rules_missing",
+        "journald_persistent_missing", "logrotate_missing", "time_sync_missing",
+        "risky_legacy_service_running", "ftp_anonymous_enabled", "rc_local_executable"
+      ];
+      const badWhenFalse = ["aslr_enabled", "core_dump_disabled", "syn_cookie_on", "log_service_running", "auditd_running", "secure_log_exists"];
+      let count = badWhenTrue.reduce((sum, key) => sum + (security[key] ? 1 : 0), 0);
+      count += badWhenFalse.reduce((sum, key) => sum + (security[key] === false ? 1 : 0), 0);
+      return count;
+    }
+
+    function closeDrawer() {
+      drawerEl.classList.remove("open");
+      drawerEl.innerHTML = "";
+      frozen = false;
+    }
+
+    function openMetricDetail(agentId, metricType) {
+      if (!cacheData) return;
+      const agent = (cacheData.agents || []).find(x => x.agent_id === agentId);
+      if (!agent) return;
+      const detail = (agent.last_details || {})[metricType] || {};
+      const structured = (agent.last_structured || {})[metricType] || {};
+      const titleMap = { system: "系统指标详情", security: "安全指标详情", process: "进程指标详情" };
+
+      let extra = "";
+      if (metricType === "security") {
+        const riskCount = structured.security_risk_count ?? calcSecurityRiskCount(structured);
+        const permIssues = structured.permission_issues || [];
+        const ownerIssues = structured.owner_issues || [];
+        extra = `
+          <div class="risk-line">
+            ${valueBadge("WARNING", structured.warning_count ?? 0)}
+            ${valueBadge("ERROR", structured.error_count ?? 0)}
+            ${valueBadge("风险项", riskCount, riskCount > 0 ? "bad-badge" : "ok-badge")}
+            ${valueBadge("权限异常", structured.permission_issue_count ?? 0, (structured.permission_issue_count ?? 0) > 0 ? "bad-badge" : "ok-badge")}
+            ${valueBadge("属主异常", structured.owner_issue_count ?? 0, (structured.owner_issue_count ?? 0) > 0 ? "bad-badge" : "ok-badge")}
+            ${valueBadge("挂载缺项", structured.mount_option_missing_count ?? 0, (structured.mount_option_missing_count ?? 0) > 0 ? "bad-badge" : "ok-badge")}
+          </div>
+          ${metricGroup("账户与身份认证", [
+            stateBadge("空密码", structured.has_empty_password_user),
+            stateBadge("passwd空字段", structured.has_passwd_empty_field),
+            stateBadge("多UID0", structured.has_multi_uid0),
+            stateBadge("系统账户可登录", structured.has_sys_login_users),
+            stateBadge("root锁定", structured.root_locked, { badWhenTrue: false, trueText: "是", falseText: "否" }),
+            stateBadge("重复UID", structured.has_dup_uid),
+            stateBadge("重复GID", structured.has_dup_gid),
+            stateBadge("重复用户", structured.has_dup_user),
+            stateBadge("重复组", structured.has_dup_group),
+            stateBadge("密码周期", structured.password_aging_risk, { trueText: "异常", falseText: "正常" }),
+            stateBadge("到期提醒", structured.password_warn_age_risk, { trueText: "异常", falseText: "正常" }),
+            stateBadge("家目录", structured.home_dir_issue, { trueText: "异常", falseText: "正常" })
+          ])}
+          ${metricGroup("SSH 远程访问", [
+            stateBadge("root远程", structured.root_login_risk),
+            stateBadge("密码登录", structured.password_login_risk),
+            stateBadge("空密码", structured.ssh_empty_password),
+            stateBadge("公钥关闭", structured.ssh_pubkey_disabled),
+            stateBadge("主机信任", structured.ssh_hostbased_risk),
+            stateBadge("rhosts", structured.ssh_ignore_rhosts_off, { trueText: "异常", falseText: "正常" }),
+            stateBadge("X11转发", structured.ssh_x11_forward),
+            stateBadge("TCP转发", structured.ssh_tcp_forward),
+            stateBadge("Agent转发", structured.ssh_agent_forward),
+            stateBadge("GatewayPorts", structured.ssh_gateway_ports),
+            stateBadge("隧道", structured.ssh_tunnel),
+            stateBadge("用户环境", structured.ssh_user_env_risk),
+            stateBadge("PAM关闭", structured.ssh_pam_off),
+            stateBadge("交互认证", structured.ssh_keyboard_interactive_risk),
+            stateBadge("MaxAuth", structured.ssh_max_auth_high),
+            stateBadge("GraceTime", structured.ssh_login_grace_high),
+            stateBadge("空闲会话", structured.ssh_client_alive_unsafe, { trueText: "异常", falseText: "正常" }),
+            stateBadge("MaxSessions", structured.ssh_max_sessions_high),
+            stateBadge("访问控制缺失", structured.ssh_access_control_missing),
+            stateBadge("弱算法", structured.ssh_weak_algorithms)
+          ])}
+          ${metricGroup("密码/PAM/sudo", [
+            stateBadge("最大周期", structured.pass_max_days_risk, { trueText: "异常", falseText: "正常" }),
+            stateBadge("最小周期", structured.pass_min_days_risk, { trueText: "异常", falseText: "正常" }),
+            stateBadge("提醒期", structured.pass_warn_age_risk, { trueText: "异常", falseText: "正常" }),
+            stateBadge("最小长度", structured.pass_min_len_risk, { trueText: "异常", falseText: "正常" }),
+            stateBadge("口令算法", structured.weak_encrypt_method, { trueText: "弱", falseText: "正常" }),
+            stateBadge("UMASK", structured.weak_umask, { trueText: "过宽", falseText: "正常" }),
+            stateBadge("复杂度模块", structured.pam_complexity_missing, { trueText: "缺失", falseText: "存在" }),
+            stateBadge("失败锁定", structured.pam_lockout_missing, { trueText: "缺失", falseText: "存在" }),
+            stateBadge("密码历史", structured.pam_history_missing, { trueText: "缺失", falseText: "存在" }),
+            stateBadge("pwquality", structured.pwquality_weak, { trueText: "弱", falseText: "正常" }),
+            stateBadge("faillock", structured.faillock_weak, { trueText: "弱", falseText: "正常" }),
+            stateBadge("sudo免密", structured.sudo_nopasswd),
+            stateBadge("sudo use_pty", structured.sudo_use_pty_missing, { trueText: "缺失", falseText: "开启" })
+          ])}
+          ${metricGroup("关键文件、目录与挂载", [
+            stateBadge("SUID/SGID", structured.has_suid_risk, { trueText: "需确认", falseText: "正常" }),
+            stateBadge("全局可写目录", structured.world_writable_no_sticky, { trueText: "异常", falseText: "正常" }),
+            stateBadge("无属主文件", structured.unowned_files),
+            stateBadge("cron可写", structured.cron_writable),
+            stateBadge("authorized_keys", structured.authorized_keys_perm_weak, { trueText: "过宽", falseText: "正常" }),
+            stateBadge("ld.so.preload", structured.ld_preload_risk, { trueText: "非空", falseText: "正常" }),
+            stateBadge("PATH", structured.path_hijack_risk, { trueText: "风险", falseText: "正常" })
+          ])}
+          ${metricGroup("内核与系统加固", [
+            stateBadge("ASLR", structured.aslr_enabled, { badWhenTrue: false, trueText: "开启", falseText: "未开" }),
+            stateBadge("CoreDump", structured.core_dump_disabled, { badWhenTrue: false, trueText: "禁用", falseText: "未禁用" }),
+            stateBadge("SUID core", structured.fs_suid_dumpable_risk, { trueText: "风险", falseText: "正常" }),
+            stateBadge("dmesg", structured.dmesg_restrict_weak, { trueText: "弱", falseText: "正常" }),
+            stateBadge("kptr", structured.kptr_restrict_weak, { trueText: "弱", falseText: "正常" }),
+            stateBadge("ptrace", structured.ptrace_scope_weak, { trueText: "弱", falseText: "正常" }),
+            stateBadge("MAC", structured.mac_missing_or_weak, { trueText: "弱/缺失", falseText: "正常" }),
+            stateBadge("高危模块", structured.high_risk_module_loaded),
+            stateBadge("完整性监控", structured.fim_missing, { trueText: "缺失", falseText: "存在" })
+          ])}
+          ${metricGroup("网络与防火墙", [
+            stateBadge("IPv4转发", structured.ip_forward_enabled, { trueText: "开启", falseText: "关闭" }),
+            stateBadge("IPv6转发", structured.ipv6_forward_enabled, { trueText: "开启", falseText: "关闭" }),
+            stateBadge("SYN Cookie", structured.syn_cookie_on, { badWhenTrue: false, trueText: "开启", falseText: "关闭" }),
+            stateBadge("ICMP重定向", structured.icmp_redirect_risk, { trueText: "风险", falseText: "正常" }),
+            stateBadge("IPv6重定向", structured.ipv6_redirect_risk, { trueText: "风险", falseText: "正常" }),
+            stateBadge("源路由", structured.source_route_enabled, { trueText: "开启", falseText: "关闭" }),
+            stateBadge("rp_filter", structured.rp_filter_weak, { trueText: "弱", falseText: "正常" }),
+            stateBadge("martians日志", structured.log_martians_off, { trueText: "关闭", falseText: "开启" }),
+            stateBadge("防火墙", structured.firewall_missing, { trueText: "缺失", falseText: "存在" }),
+            stateBadge("iptables策略", structured.iptables_input_open, { trueText: "开放", falseText: "正常" }),
+            stateBadge("高危端口", structured.insecure_ports_listening)
+          ])}
+          ${metricGroup("审计、日志与时间", [
+            stateBadge("日志服务", structured.log_service_running, { badWhenTrue: false, trueText: "运行", falseText: "未运行" }),
+            stateBadge("auditd", structured.auditd_running, { badWhenTrue: false, trueText: "运行", falseText: "未运行" }),
+            stateBadge("内核审计", structured.audit_kernel_enabled, { badWhenTrue: false, trueText: "开启", falseText: "未知/关闭" }),
+            stateBadge("审计规则", structured.audit_rules_missing, { trueText: "缺失", falseText: "覆盖" }),
+            stateBadge("安全日志", structured.secure_log_exists, { badWhenTrue: false, trueText: "存在", falseText: "缺失" }),
+            stateBadge("journald持久化", structured.journald_persistent_missing, { trueText: "缺失", falseText: "开启" }),
+            stateBadge("logrotate", structured.logrotate_missing, { trueText: "缺失", falseText: "存在" }),
+            stateBadge("时间同步", structured.time_sync_missing, { trueText: "缺失", falseText: "运行" })
+          ])}
+          ${metricGroup("服务暴露与持久化", [
+            stateBadge("传统服务", structured.risky_legacy_service_running, { trueText: "运行", falseText: "未发现" }),
+            stateBadge("FTP匿名", structured.ftp_anonymous_enabled, { trueText: "开启", falseText: "关闭" }),
+            stateBadge("rc.local", structured.rc_local_executable, { trueText: "可执行", falseText: "正常" })
+          ])}
+          <div class="metric-group">
+            <div class="metric-group-title">异常明细</div>
+            <div class="kv"><b>权限异常</b></div>${detailLines(permIssues)}
+            <div class="kv"><b>属主属组异常</b></div>${detailLines(ownerIssues)}
+          </div>`;
+      } else if (metricType === "process") {
+        // 按进程展示运行状态
+        const statusMap = parseProcessStatus(agent);
+        const processRows = Object.keys(statusMap).map(name =>
+          `<div class="proc-row"><span class="proc-status ${statusMap[name] === true ? 'proc-running' : statusMap[name] === false ? 'proc-stopped' : 'proc-unknown'}"></span> ${name} ${statusMap[name] === true ? '(运行中)' : statusMap[name] === false ? '(未运行)' : '(未检查)'}</div>`
+        ).join("");
+        extra = `<div class="kv"><b>各进程状态</b></div>${processRows || '<div class="muted">无</div>'}
+           <div class="kv"><b>检查到的PID数量</b> ${structured.checked_pid_count ?? 0}</div>`;
+      } else {
+        extra = `<div class="kv"><b>系统数值</b> CPU: ${structured.cpu_usage_percent ?? "-"}% | 内存: ${structured.mem_usage_percent ?? "-"}% | 负载(1/5/15m): ${structured.load_1 ?? "-"}/${structured.load_5 ?? "-"}/${structured.load_15 ?? "-"} | 磁盘告警: ${structured.disk_warning_count ?? 0}</div>`;
+      }
+
+      frozen = true;
+      drawerEl.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;">${titleMap[metricType] || metricType}</h3>
+          <button class="link-btn" onclick="closeDrawer()">关闭</button>
+        </div>
+        <div class="muted" style="margin-top:4px;">机器: ${agent.ip || agent.agent_id} (${agent.hostname || "unknown"})</div>
+        <div class="muted">脚本: ${detail.script || "-"} | 状态: ${detail.status || "-"} | 耗时: ${detail.duration_sec ?? "-" }s</div>
+        ${extra}
+        <div class="kv" style="margin-top:8px;"><b>ERROR 列表</b></div>
+        ${detailLines(detail.error_lines)}
+        <div class="kv" style="margin-top:8px;"><b>WARNING 列表</b></div>
+        ${detailLines(detail.warning_lines)}
+        <div class="kv" style="margin-top:8px;"><b>执行结果（过滤运行过程日志后）</b></div>
+        ${detailLines(detail.result_lines)}
+        <div class="kv" style="margin-top:8px;"><b>原始归档文件</b></div>
+        ${(agent.last_archive_files || []).map(x => `<div class='mono'>${escapeHtml(x)}</div>`).join("") || "<div class='muted'>无</div>"}
+      `;
+      drawerEl.classList.add("open");
+    }
+
+    function agentConfigBlock(agent) {
+      const extraTargets = agent.extra_process_targets || "";
+      const extraList = extraTargets ? extraTargets.split(",").map(s => s.trim()).filter(s => s) : [];
+      const globalList = cacheData && cacheData.process_targets ? cacheData.process_targets.split(",").map(s => s.trim()).filter(s => s) : [];
+      // 过滤掉已在全局列表中的重复项
+      const globalSet = new Set(globalList);
+      const filteredExtra = extraList.filter(p => !globalSet.has(p));
+      return `
+        <div class="kv" style="margin-top:8px;border-top:1px dashed #e5e7eb;padding-top:6px;">
+          <b>单机独有进程配置</b> <span class="muted">（此机器额外监控的进程，不影响全局）</span>
+          <div style="margin-top:4px;">
+            <span class="muted">全局: </span>${globalList.map(p => `<span style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;padding:1px 6px;margin:2px;font-size:12px;display:inline-block;">${p}</span>`).join("") || '<span class="muted">无</span>'}
+          </div>
+          <div style="margin-top:4px;">
+            <span class="muted">独有: </span>
+            <span id="agent-extra-tags-${agent.agent_id.replace(/[^a-zA-Z0-9_-]/g,'_')}">
+              ${filteredExtra.map(p => `<span class="tag">${p} <span class="remove" onclick="removeAgentTag('${agent.agent_id}','${p}',event)">&times;</span></span>`).join("") || '<span class="muted">无</span>'}
+            </span>
+            <input type="text" style="width:100px;font-size:12px;padding:2px 4px;margin-left:4px;"
+              placeholder="添加进程"
+              onkeydown="if(event.key==='Enter'){addAgentTag('${agent.agent_id}',this.value,this);this.value='';}" />
+          </div>
+        </div>`;
+    }
+
+    async function saveAgentExtra(agentId) {
+      const elId = "agent-extra-tags-" + agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const tags = el.querySelectorAll(".tag");
+      const seen = new Set();
+      const names = [];
+      tags.forEach(t => {
+        const text = t.childNodes[0].textContent.trim();
+        if (text && !seen.has(text)) {
+          seen.add(text);
+          names.push(text);
+        }
+      });
+      const extraStr = names.join(",");
+      try {
+        await fetch("/api/agent-process-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_id: agentId, extra_targets: extraStr })
+        });
+      } catch (e) {}
+    }
+
+    function addAgentTag(agentId, name, inputEl) {
+      name = (name || "").trim();
+      if (!name) return;
+      const elId = "agent-extra-tags-" + agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const el = document.getElementById(elId);
+      if (!el) return;
+      // 检查是否与全局重复
+      const globalList = cacheData && cacheData.process_targets ? cacheData.process_targets.split(",").map(s => s.trim()).filter(s => s) : [];
+      if (globalList.includes(name)) return;
+      // 去重检查
+      const existing = el.querySelectorAll(".tag");
+      for (const t of existing) {
+        if (t.childNodes[0].textContent.trim() === name) return;
+      }
+      const span = document.createElement("span");
+      span.className = "tag";
+      span.innerHTML = name + ' <span class="remove" onclick="removeAgentTag(\'' + agentId + '\',\'' + name + '\',event)">&times;</span>';
+      el.appendChild(span);
+      inputEl.value = "";
+      saveAgentExtra(agentId);
+    }
+
+    function removeAgentTag(agentId, name, event) {
+      if (event) event.stopPropagation();
+      const elId = "agent-extra-tags-" + agentId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const tags = el.querySelectorAll(".tag");
+      for (const t of tags) {
+        if (t.childNodes[0].textContent.trim() === name) {
+          t.remove();
+          break;
+        }
+      }
+      saveAgentExtra(agentId);
+    }
+
+    function metricsBlock(agent) {
+      const s = agent.last_structured || {};
+      const system = s.system || {};
+      const security = s.security || {};
+      const process = s.process || {};
+      const securityPerm = security.permission_issue_count ?? 0;
+      const securityRiskCount = security.security_risk_count ?? calcSecurityRiskCount(security);
+      const securityRiskClass = securityRiskCount > 0 ? "bad-badge" : "ok-badge";
+
+      // 逐个进程展示运行状态
+      const statusMap = parseProcessStatus(agent);
+      const procStatusLines = Object.keys(statusMap).map(name =>
+        `<span style="margin-right:8px;"><span class="proc-status ${statusMap[name] === true ? 'proc-running' : statusMap[name] === false ? 'proc-stopped' : 'proc-unknown'}"></span>${name}${statusMap[name] === true ? '' : statusMap[name] === false ? ' (未运行)' : ' (未检查)'}</span>`
+      ).join("") || "-";
+
+      return `
+        <div class="kv"><b>系统指标</b> CPU: ${system.cpu_usage_percent ?? "-"}% | 内存: ${system.mem_usage_percent ?? "-"}% | 负载1m: ${system.load_1 ?? "-"} | 磁盘告警: ${system.disk_warning_count ?? 0}
+        <button class="link-btn" onclick="openMetricDetail('${agent.agent_id}','system')">查看详情</button></div>
+        <div class="kv"><b>安全基线指标</b>
+          ${valueBadge("风险项", securityRiskCount, securityRiskClass)}
+          ${valueBadge("WARN", security.warning_count ?? 0)}
+          ${valueBadge("ERR", security.error_count ?? 0)}
+          ${valueBadge("权限", securityPerm, securityPerm > 0 ? "bad-badge" : "ok-badge")}
+          ${stateBadge("ROOT登录", security.root_login_risk)}
+          ${stateBadge("防火墙", security.firewall_missing, { trueText: "缺失", falseText: "存在" })}
+        <button class="link-btn" onclick="openMetricDetail('${agent.agent_id}','security')">查看详情</button></div>
+        <div class="kv"><b>安全扩展</b>
+          ${stateBadge("PAM复杂度", security.pam_complexity_missing, { trueText: "缺失", falseText: "存在" })}
+          ${stateBadge("审计规则", security.audit_rules_missing, { trueText: "缺失", falseText: "覆盖" })}
+          ${stateBadge("时间同步", security.time_sync_missing, { trueText: "缺失", falseText: "运行" })}
+          ${stateBadge("PATH", security.path_hijack_risk, { trueText: "风险", falseText: "正常" })}
+        </div>
+        <div class="kv"><b>进程指标</b> 告警: ${process.warning_count ?? 0} | 错误: ${process.error_count ?? 0} | 假死/死锁风险: ${(process.hang_risk ? "是" : "否")}
+        <button class="link-btn" onclick="openMetricDetail('${agent.agent_id}','process')">查看详情</button></div>
+        <div class="kv"><b>进程状态一览</b> ${procStatusLines}</div>
+      `;
+    }
+
+    function render(data) {
+      cacheData = data;
+      // 更新进程配置面板
+      if (data.process_targets) {
+        renderTags(data.process_targets.split(",").map(s => s.trim()).filter(s => s));
+      } else {
+        renderTags([]);
+      }
+      metaEl.textContent = `服务时间: ${new Date(data.server_time * 1000).toLocaleString()} | 存活阈值: ${data.alive_timeout_seconds}s | 机器数: ${data.agents.length}`;
+      if (!data.agents.length) {
+        listEl.innerHTML = "<div class='card'>暂无待检机器上报数据</div>";
+        return;
+      }
+      const sorted = [...data.agents].sort((a, b) => (a.ip || "").localeCompare(b.ip || ""));
+      listEl.innerHTML = sorted.map(agent => `
+        <div class="card">
+          <div class="title">
+            <span>${agent.ip || agent.agent_id} (${agent.hostname || "unknown"})</span>
+            <span>${agent.check_overdue ? '<span style="color:#dc2626;font-weight:bold;">巡检逾期</span> ' : ''}<span class="${agent.alive ? "ok" : "bad"}">${agent.alive ? "在线" : "离线"}</span></span>
+          </div>
+          <div class="muted">agent_id: ${agent.agent_id}</div>
+          <div class="muted">最近心跳: ${fmtTime(agent.last_heartbeat_ts)} | 心跳计数: ${agent.heartbeat_count}</div>
+          <div class="muted">最近巡检: ${fmtTime(agent.last_report_ts)} ${agent.check_overdue ? '<span style="color:#dc2626;">【逾期】未在预期序号收到巡检报告</span>' : ''}</div>
+          <div class="muted">待下发命令: ${agent.pending_command ? agent.pending_command.type : "无"}</div>
+          <div class="stats">
+            <span class="pill">INFO: ${agent.last_report_summary?.info || 0}</span>
+            <span class="pill">WARNING: ${agent.last_report_summary?.warning || 0}</span>
+            <span class="pill">ERROR: ${agent.last_report_summary?.error || 0}</span>
+          </div>
+          ${metricsBlock(agent)}
+          ${agentConfigBlock(agent)}
+          <div class="actions">
+            <button onclick="triggerCheck('${agent.agent_id}', this)">立即检测</button>
+            <span class="muted">命令会在该机器下一次心跳时下发</span>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    async function reload() {
+      if (frozen) return;
+      try {
+        const res = await fetch("/api/status");
+        if (!res.ok) throw new Error("request failed");
+        const data = await res.json();
+        render(data);
+      } catch (e) {
+        metaEl.textContent = "加载失败: " + e.message;
+      }
+    }
+
+    reload();
+    setInterval(reload, 5000);
+    window.openMetricDetail = openMetricDetail;
+    window.closeDrawer = closeDrawer;
+  </script>
+</body>
+</html>
